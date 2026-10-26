@@ -239,14 +239,20 @@ class GameView(ctx: Context) : SurfaceView(ctx), SurfaceHolder.Callback, Runnabl
     override fun run() {
         var last = System.nanoTime()
         while (running) {
-            val now = System.nanoTime()
-            var dt = (now - last) / 1e9f
-            if (dt > 0.05f) dt = 0.05f
-            last = now
-            if (!paused && !gameOver) update(dt)
-            if (cheatToastT > 0f) cheatToastT -= dt
-            if (waveMsgT > 0f) waveMsgT -= dt
-            draw()
+            try {
+                val now = System.nanoTime()
+                var dt = (now - last) / 1e9f
+                if (dt > 0.05f) dt = 0.05f
+                last = now
+                if (w <= 0f || h <= 0f) { Thread.sleep(16); continue }
+                if (!paused && !gameOver) update(dt)
+                if (cheatToastT > 0f) cheatToastT -= dt
+                if (waveMsgT > 0f) waveMsgT -= dt
+                draw()
+            } catch (t: Throwable) {
+                android.util.Log.e("DefenderTV", "loop error", t)
+                try { Thread.sleep(100) } catch (_: InterruptedException) {}
+            }
         }
     }
 

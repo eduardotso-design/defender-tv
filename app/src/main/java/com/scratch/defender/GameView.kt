@@ -77,7 +77,7 @@ class GameView(ctx: Context) : SurfaceView(ctx), SurfaceHolder.Callback, Runnabl
     private var fireHeld = false
     private var fireCool = 0f
 
-    init { holder.addCallback(this); isFocusable = true; isFocusableInTouchMode = true }
+    init { holder.addCallback(this); isFocusable = true; isFocusableInTouchMode = true; Sfx.init() }
 
     override fun surfaceCreated(h0: SurfaceHolder) { resume() }
     override fun surfaceChanged(h0: SurfaceHolder, f: Int, wv: Int, hv: Int) {
@@ -167,16 +167,18 @@ class GameView(ctx: Context) : SurfaceView(ctx), SurfaceHolder.Callback, Runnabl
         if (fireCool > 0f || gameOver || paused) return
         bullets.add(Bullet(shipX + facing * 24f, shipY, facing * 1600f, 0f))
         fireCool = if (rapidFire) 0.05f else 0.14f
+        Sfx.play("fire")
     }
 
     private fun smartBomb() {
         if (bombs <= 0 || gameOver) return
         bombs--
+        Sfx.play("bomb")
         val it = enemies.iterator()
         while (it.hasNext()) {
             val e = it.next()
             if (abs(wrapDx(e.x, cameraX + w / 2f)) < w * 0.75f) {
-                score += e.points; boom(e.x, e.y, 20); it.remove()
+                score += e.points; boom(e.x, e.y, 20); e.onDeath(this); it.remove()
             }
         }
         eBullets.clear()
@@ -188,6 +190,7 @@ class GameView(ctx: Context) : SurfaceView(ctx), SurfaceHolder.Callback, Runnabl
         shipX = Random.nextFloat() * worldW
         shipY = 120f + Random.nextFloat() * (h - 240f)
         boom(shipX, shipY, 10)
+        Sfx.play("hyper")
     }
 
     // ---------- Cheats ----------
@@ -302,9 +305,11 @@ class GameView(ctx: Context) : SurfaceView(ctx), SurfaceHolder.Callback, Runnabl
                 val e = ei.next()
                 if (abs(wrapDx(b.x, e.x)) < e.r && abs(b.y - e.y) < e.r) {
                     score += e.points; boom(e.x, e.y, 12)
-                    if (e is Pod) { // split into swarmers
+                    if (e is Pod) {
                         repeat(4) { enemies.add(Swarmer(e.x, e.y)) }
-                    }
+                        Sfx.play("bigBoom")
+                    } else Sfx.play("boom")
+                    e.onDeath(this)
                     ei.remove(); bi.remove(); break
                 }
             }
@@ -329,12 +334,14 @@ class GameView(ctx: Context) : SurfaceView(ctx), SurfaceHolder.Callback, Runnabl
 
         // Humans
         for (h in humans) h.update(dt, this)
+        humans.removeAll { it.state == -1 }
+        enemies.removeAll { !it.alive }
 
         // Particles
         val pi = particles.iterator()
         while (pi.hasNext()) { val p = pi.next(); p.update(dt); if (p.life <= 0f) pi.remove() }
 
-        if (enemies.isEmpty()) { wave++; spawnWave() }
+        if (enemies.isEmpty()) { wave++; spawnWave(); Sfx.play("wave") }
         if (humans.isEmpty()) { // all humans lost — small penalty, respawn 4 next wave only
             waveMsg = "PLANET LOST"; waveMsgT = 2f
             // mild: respawn a few humans so game continues playably
@@ -344,6 +351,9 @@ class GameView(ctx: Context) : SurfaceView(ctx), SurfaceHolder.Callback, Runnabl
 
     private fun killShip() {
         boom(shipX, shipY, 30)
+        Sfx.play("bigBoom")
+        // Drop any carried human
+        for (hm in humans) if (hm.state == 3) { hm.state = 2; hm.vy = 0f }
         lives--
         shipX = worldW / 2f; shipY = h / 2f; vx = 0f; vy = 0f
         if (lives < 0) gameOver = true
@@ -524,26 +534,27 @@ class GameView(ctx: Context) : SurfaceView(ctx), SurfaceHolder.Callback, Runnabl
 
     // ---------- Entity classes ----------
     abstract class Enemy(var x: Float, var y: Float, val r: Float, val points: Int, val color: Int) {
+        var alive = true
         abstract fun update(dt: Float, dm: Float, g: GameView)
         abstract fun draw(c: Canvas, g: GameView, sx: Float)
+        open fun onDeath(g: GameView) {}
     }
 
     class Lander(x: Float, y: Float) : Enemy(x, y, 16f, 150, Color.rgb(0xFF, 0x66, 0x66)) {
-        private var carrying: Human? = null
+        var carrying: Human? = null
         private var fireT = 1f + Random.nextFloat() * 2f
         override fun update(dt: Float, dm: Float, g: GameView) {
             val tx = g.shipX; val ty = g.shipY
             if (carrying == null) {
-                // Scan for nearest human
                 var target: Human? = null; var best = Float.MAX_VALUE
-                for (h in g.humans) if (!h.carried) {
+                for (h in g.humans) if (h.state == 0) {
                     val d = abs(g.wrapDx(h.x, x)); if (d < best) { best = d; target = h }
                 }
                 if (target != null && best < 500f) {
                     x = g.wrap(x + sign(g.wrapDx(target.x, x)) * 70f * dm * dt)
                     y += ((g.groundY - 14f) - y) * dt * 1.2f
                     if (abs(g.wrapDx(target.x, x)) < 12f && y > g.groundY - 30f) {
-                        carrying = target; target.carried = true
+                        carrying = target; target.state = 1
                     }
                 } else {
                     x = g.wrap(x + sign(g.wrapDx(tx, x)) * 50f * dm * dt)
@@ -557,14 +568,16 @@ class GameView(ctx: Context) : SurfaceView(ctx), SurfaceHolder.Callback, Runnabl
                 y -= 60f * dt
                 carrying!!.x = x; carrying!!.y = y + 14f
                 if (y < 40f) {
-                    // Mutate
                     g.humans.remove(carrying!!)
                     g.enemies.add(Mutant(x, y))
+                    Sfx.play("mutate")
                     carrying = null
-                    // Remove self by zeroing r? Instead, flag — but easier: mark as mutated by removal next tick
-                    y = -9999f // offscreen; will be collected via collision eventually
+                    alive = false
                 }
             }
+        }
+        override fun onDeath(g: GameView) {
+            carrying?.let { it.state = 2; it.vy = 0f; carrying = null }
         }
         override fun draw(c: Canvas, g: GameView, sx: Float) {
             val p = g.paint; p.color = color
@@ -676,13 +689,37 @@ class GameView(ctx: Context) : SurfaceView(ctx), SurfaceHolder.Callback, Runnabl
 
     class Human(var x: Float) {
         var y: Float = 0f
-        var carried = false
+        var vy: Float = 0f
+        // 0=walking free, 1=abducted (held by lander), 2=falling, 3=carried by ship, -1=dead
+        var state: Int = 0
         private var dir = if (Random.nextBoolean()) 1f else -1f
         fun update(dt: Float, g: GameView) {
-            if (!carried) {
-                y = g.groundY - 14f
-                x = g.wrap(x + dir * 20f * dt)
-                if (Random.nextFloat() < 0.005f) dir = -dir
+            when (state) {
+                0 -> {
+                    y = g.groundY - 14f
+                    x = g.wrap(x + dir * 20f * dt)
+                    if (Random.nextFloat() < 0.005f) dir = -dir
+                }
+                2 -> {
+                    vy += 400f * dt
+                    y += vy * dt
+                    // Ship catches us mid-air
+                    if (abs(g.wrapDx(g.shipX, x)) < 22f && abs((g.shipY + 14f) - y) < 20f) {
+                        state = 3; vy = 0f
+                        g.score += 250; Sfx.play("pickup")
+                    } else if (y >= g.groundY - 14f) {
+                        y = g.groundY - 14f
+                        if (vy > 320f) { state = -1 } // splat
+                        else { state = 0; vy = 0f; Sfx.play("pickup") }
+                    }
+                }
+                3 -> {
+                    x = g.shipX; y = g.shipY + 16f
+                    if (y >= g.groundY - 20f) {
+                        state = 0; y = g.groundY - 14f
+                        g.score += 500; Sfx.play("pickup")
+                    }
+                }
             }
         }
     }

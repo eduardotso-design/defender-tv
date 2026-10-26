@@ -127,38 +127,63 @@ class GameView(ctx: Context) : SurfaceView(ctx), SurfaceHolder.Callback, Runnabl
     private fun difficultyMul(): Float = min(1f + (wave - 1) * 0.03f, 1.3f)
 
     // ---------- Input ----------
+    private val heldKeys = HashSet<Int>()
     fun handleKey(code: Int, down: Boolean): Boolean {
-        if (down) pushCheat(code)
+        val firstPress = down && !heldKeys.contains(code)
+        if (down) heldKeys.add(code) else heldKeys.remove(code)
+        if (firstPress) pushCheat(code)
         when (code) {
             KeyEvent.KEYCODE_DPAD_LEFT -> { inLeft = down; return true }
             KeyEvent.KEYCODE_DPAD_RIGHT -> { inRight = down; return true }
             KeyEvent.KEYCODE_DPAD_UP -> { inUp = down; return true }
             KeyEvent.KEYCODE_DPAD_DOWN -> { inDown = down; return true }
             KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
-            KeyEvent.KEYCODE_SPACE -> { fireHeld = down; if (down) tryFire(); return true }
+            KeyEvent.KEYCODE_SPACE -> { fireHeld = down; if (firstPress) tryFire(); return true }
             KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_BACK -> {
-                if (down) {
-                    if (gameOver) { resetWorld() }
-                    else smartBomb()
+                if (firstPress) {
+                    if (gameOver) { resetWorld() } else smartBomb()
                 }
                 return true
             }
-            KeyEvent.KEYCODE_BUTTON_Y -> { if (down) hyperspace(); return true }
-            KeyEvent.KEYCODE_BUTTON_X -> { if (down) reverseFacing(); return true }
+            KeyEvent.KEYCODE_BUTTON_Y -> { if (firstPress) hyperspace(); return true }
+            KeyEvent.KEYCODE_BUTTON_X -> { if (firstPress) reverseFacing(); return true }
             KeyEvent.KEYCODE_BUTTON_START, KeyEvent.KEYCODE_MENU -> {
-                if (down) paused = !paused; return true
+                if (firstPress) paused = !paused; return true
             }
         }
         return false
     }
 
+    private var hatX = 0f
+    private var hatY = 0f
     fun handleMotion(ev: MotionEvent): Boolean {
-        if (ev.source and android.view.InputDevice.SOURCE_JOYSTICK == 0) return false
+        val src = ev.source
+        val isJoy = (src and android.view.InputDevice.SOURCE_JOYSTICK) != 0
+        val isDpad = (src and android.view.InputDevice.SOURCE_DPAD) != 0
+        if (!isJoy && !isDpad) return false
         axisX = ev.getAxisValue(MotionEvent.AXIS_X)
         axisY = ev.getAxisValue(MotionEvent.AXIS_Y)
         if (abs(axisX) < 0.2f) axisX = 0f
         if (abs(axisY) < 0.2f) axisY = 0f
+        // HAT axes often carry the D-pad — synthesize key events on edges
+        val hx = ev.getAxisValue(MotionEvent.AXIS_HAT_X)
+        val hy = ev.getAxisValue(MotionEvent.AXIS_HAT_Y)
+        hatEdge(hatX, hx, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT)
+        hatEdge(hatY, hy, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN)
+        hatX = hx; hatY = hy
         return true
+    }
+
+    private fun hatEdge(prev: Float, cur: Float, negKey: Int, posKey: Int) {
+        val p = when { prev < -0.5f -> -1; prev > 0.5f -> 1; else -> 0 }
+        val c = when { cur < -0.5f -> -1; cur > 0.5f -> 1; else -> 0 }
+        if (p == c) return
+        // Release previous
+        if (p == -1) handleKey(negKey, false)
+        if (p == 1) handleKey(posKey, false)
+        // Press new
+        if (c == -1) handleKey(negKey, true)
+        if (c == 1) handleKey(posKey, true)
     }
 
     private fun reverseFacing() { facing = -facing }
